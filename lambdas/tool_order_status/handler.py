@@ -1,10 +1,11 @@
-import json
+import random
 
 
+# Quick POC upgrade
 def lambda_handler(event, context):
-    order_id = event.get("order_id")
-    # TODO: implement order status lookup
+    statuses = ["In Transit", "Delivered", "Delayed", "Processing"]
     return {
-        "statusCode": 200,
-        "body": json.dumps({"order_id": order_id, "status": "in_progress"})
+        "order_id": event.get("order_id"),
+        "status": random.choice(statuses),
+        "eta": "2-3 business days",
     }

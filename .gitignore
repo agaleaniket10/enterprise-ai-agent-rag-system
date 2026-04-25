@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Zip artifacts
+*.zip
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# OS
+.DS_Store
+
+# Secrets
+*.pem
+*.key
+teardown.sh
+
+# Lab scratch files
+opensearch/order/
+opensearch/policy.txt
+response.json
+output.txt
+trust-policy.json
+ticket-api-schema.json

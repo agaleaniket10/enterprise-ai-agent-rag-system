@@ -1,0 +1,15 @@
+{
+  "Comment": "Enterprise AI Agent Workflow",
+  "StartAt": "InvokeAgent",
+  "States": {
+    "InvokeAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "trigger_agent",
+        "Payload.$": "$"
+      },
+      "End": true
+    }
+  }
+}

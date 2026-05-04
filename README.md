@@ -1,5 +1,8 @@
 # Enterprise AI Agent on AWS
 
+[![CI](https://github.com/agaleaniket10/enterprise-ai-agent-rag-system/actions/workflows/ci.yml/badge.svg)](https://github.com/agaleaniket10/enterprise-ai-agent-rag-system/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/) [![AWS](https://img.shields.io/badge/AWS-Bedrock-orange.svg)](https://aws.amazon.com/bedrock/)
+
+
 An enterprise-grade AI agent built with Amazon Bedrock Agents, AWS Lambda, Step Functions, and OpenSearch.
 
 ## Architecture

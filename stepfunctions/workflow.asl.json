@@ -1,13 +1,131 @@
 {
-  "Comment": "Enterprise AI Agent Workflow",
-  "StartAt": "InvokeAgent",
+  "Comment": "Multi-agent enterprise assistant — routes to Order, Support, or Billing agent with retry and error handling",
+  "StartAt": "RouteToAgent",
   "States": {
-    "InvokeAgent": {
+    "RouteToAgent": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "trigger_agent",
+        "FunctionName": "${RouterLambdaArn}",
         "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "statusCode.$": "$.Payload.statusCode",
+        "intent.$":     "$.Payload.intent",
+        "sessionId.$":  "$.Payload.sessionId",
+        "response.$":   "$.Payload.response"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleRoutingError",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckResponseStatus"
+    },
+
+    "CheckResponseStatus": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.statusCode",
+          "NumericEquals": 200,
+          "Next": "RouteByIntent"
+        },
+        {
+          "Variable": "$.statusCode",
+          "NumericEquals": 400,
+          "Next": "HandleValidationError"
+        }
+      ],
+      "Default": "HandleRoutingError"
+    },
+
+    "RouteByIntent": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.intent",
+          "StringEquals": "order",
+          "Next": "LogOrderIntent"
+        },
+        {
+          "Variable": "$.intent",
+          "StringEquals": "billing",
+          "Next": "LogBillingIntent"
+        },
+        {
+          "Variable": "$.intent",
+          "StringEquals": "support",
+          "Next": "LogSupportIntent"
+        }
+      ],
+      "Default": "ReturnResponse"
+    },
+
+    "LogOrderIntent": {
+      "Type": "Pass",
+      "Parameters": {
+        "intent": "order",
+        "response.$": "$.response",
+        "sessionId.$": "$.sessionId",
+        "routed_to": "OrderManagementAgent"
+      },
+      "Next": "ReturnResponse"
+    },
+
+    "LogBillingIntent": {
+      "Type": "Pass",
+      "Parameters": {
+        "intent": "billing",
+        "response.$": "$.response",
+        "sessionId.$": "$.sessionId",
+        "routed_to": "BillingAgent"
+      },
+      "Next": "ReturnResponse"
+    },
+
+    "LogSupportIntent": {
+      "Type": "Pass",
+      "Parameters": {
+        "intent": "support",
+        "response.$": "$.response",
+        "sessionId.$": "$.sessionId",
+        "routed_to": "SupportAgent"
+      },
+      "Next": "ReturnResponse"
+    },
+
+    "ReturnResponse": {
+      "Type": "Pass",
+      "End": true
+    },
+
+    "HandleValidationError": {
+      "Type": "Pass",
+      "Parameters": {
+        "statusCode": 400,
+        "error": "Invalid request — missing or malformed input",
+        "response": "I'm sorry, I couldn't understand your request. Could you please rephrase it?"
+      },
+      "End": true
+    },
+
+    "HandleRoutingError": {
+      "Type": "Pass",
+      "Parameters": {
+        "statusCode": 500,
+        "error": "Agent routing failed after retries",
+        "response": "I'm experiencing technical difficulties. Please try again in a moment or contact support directly."
       },
       "End": true
     }

@@ -1,228 +1,217 @@
 # Enterprise AI Agent on AWS
 
-[![CI](https://github.com/agaleaniket10/enterprise-ai-agent-rag-system/actions/workflows/ci.yml/badge.svg)](https://github.com/agaleaniket10/enterprise-ai-agent-rag-system/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![AWS](https://img.shields.io/badge/AWS-Bedrock-orange.svg)](https://aws.amazon.com/bedrock/)
+[![CI](https://github.com/agaleaniket10/enterprise-ai-agent-rag-system/actions/workflows/ci.yml/badge.svg)](https://github.com/agaleaniket10/enterprise-ai-agent-rag-system/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/) [![AWS](https://img.shields.io/badge/AWS-Bedrock-orange.svg)](https://aws.amazon.com/bedrock/) [![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen.svg)]()
 
-An enterprise-grade AI agent built on **Amazon Bedrock Agents** (Claude Haiku 4.5) with tool-use via AWS Lambda, workflow orchestration via Step Functions, and a RAG knowledge base backed by OpenSearch.
-
-The agent handles two real enterprise workflows — order status lookups and support ticket creation — demonstrating how to wire Bedrock Action Groups to serverless backends with proper IAM, error handling, and session management.
+An enterprise-grade multi-agent AI system built on AWS Bedrock. A router agent classifies incoming queries by intent and dispatches to specialist sub-agents — each backed by dedicated Lambda tools and a shared Lambda Layer.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        USER (chat.py CLI)                           │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │  invoke_agent()
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│              Amazon Bedrock Agent (Claude Haiku 4.5)                │
-│                                                                     │
-│  System prompt: enterprise assistant with tool-use instructions     │
-│  Session management: unique session ID per conversation             │
-│                                                                     │
-│  ┌─────────────────────┐    ┌──────────────────────────────────┐   │
-│  │   Action Groups      │    │        Knowledge Base            │   │
-│  │                     │    │                                  │   │
-│  │  OrderStatus ───────┼──▶ │  OpenSearch (kNN vector index)   │   │
-│  │  (order_id → status)│    │  Titan Embed v1 (1536-dim)       │   │
-│  │                     │    │  RAG over enterprise docs        │   │
-│  │  CreateTicket ──────┼──▶ └──────────────────────────────────┘   │
-│  │  (title + desc      │                                           │
-│  │   → ticket_id)      │                                           │
-│  └──────────┬──────────┘                                           │
-└─────────────┼───────────────────────────────────────────────────────┘
-              │  Lambda invoke
-              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      AWS Lambda Functions                           │
-│                                                                     │
-│  order-status-tool     ── returns order status + ETA               │
-│  create-ticket-tool    ── creates ticket, returns TKT-XXXXXX ID    │
-│  trigger_agent         ── Step Functions entry point               │
-└─────────────────────────────────────────────────────────────────────┘
-              │
-              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│              AWS Step Functions (workflow.asl.json)                 │
-│  Orchestrates agent invocation for async / batch workflows          │
-└─────────────────────────────────────────────────────────────────────┘
+User
+  │
+  ▼
+chat.py / Step Functions
+  │
+  ▼
+┌─────────────────────────────────────────────────────┐
+│              Router Agent (Claude Haiku)            │
+│         Keyword intent classification               │
+│   billing → BillingAgent                           │
+│   support → SupportAgent                           │
+│   order   → OrderAgent                             │
+│   unknown → GeneralAgent (fallback)                │
+└──────────┬──────────────┬──────────────┬───────────┘
+           │              │              │
+    ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼────────┐
+    │ Order Agent │ │Support Agent│ │Billing Agent│
+    │─────────────│ │─────────────│ │─────────────│
+    │order_status │ │create_ticket│ │ get_invoice │
+    │order_history│ │escalate_issue│ │process_refund│
+    │cancel_order │ └─────────────┘ └─────────────┘
+    └─────────────┘
+           │
+    ┌──────▼──────────────────────────────┐
+    │     Lambda Layer: agent_commons     │
+    │  extract_param · build_response     │
+    │  validate_required · build_error    │
+    └─────────────────────────────────────┘
 ```
 
 ---
 
-## Key Design Decisions
+## Tools (7 Lambda functions)
 
-**Why Bedrock Agents over a custom LangChain agent?**
-Bedrock Agents handles session state, tool routing, and retry logic natively — no custom orchestration code. This is the production pattern AWS recommends for enterprise deployments.
+| Agent | Tool | Description |
+|---|---|---|
+| Order | `tool_order_status` | Get current status + tracking for an order |
+| Order | `tool_order_history` | List last N orders for a customer |
+| Order | `tool_cancel_order` | Cancel an order (with eligibility check) |
+| Support | `tool_create_ticket` | Create a support ticket with validation |
+| Support | `tool_escalate_issue` | Escalate a ticket with SLA routing |
+| Billing | `tool_get_invoice` | Retrieve invoice details for an order |
+| Billing | `tool_process_refund` | Process a refund with method selection |
 
-**Why Claude Haiku 4.5 via inference profile?**
-The `us.*` inference profile routes across `us-east-1`, `us-east-2`, and `us-west-2` automatically — built-in regional failover with no extra code.
+---
 
-**Why Step Functions alongside the CLI?**
-The CLI (`chat.py`) is for interactive use. Step Functions (`workflow.asl.json`) enables the same agent to be triggered from async pipelines, scheduled jobs, or other AWS services — showing the architecture scales beyond a chatbot.
+## Lambda Layer: agent_commons
+
+All handlers share a single Lambda Layer (`layers/agent_commons/`) that provides:
+
+- `extract_param` / `extract_params` — parse Bedrock Agents parameter lists
+- `build_response` / `build_error` — structured Bedrock-compatible response envelopes
+- `validate_required` / `validate_enum` / `validate_max_length` — input validation
+- `utc_now` / `log_event` — shared utilities
+
+This keeps each handler to ~40 lines and ensures consistent error responses across all tools.
+
+---
+
+## Error Handling
+
+Every Lambda handler follows this pattern:
+
+```python
+try:
+    # validate inputs
+    errors = validate_required(params, "field1", "field2")
+    if errors:
+        return build_error(ag, fn, "Validation failed", "VALIDATION_ERROR", errors)
+    # business logic
+    return build_response(ag, fn, result)
+except SpecificError as e:
+    logger.error("...")
+    return build_error(ag, fn, "Specific message", "SPECIFIC_CODE")
+except Exception as e:
+    logger.exception("Unexpected error")
+    return build_error(ag, fn, "Internal server error", "INTERNAL_ERROR", [str(e)])
+```
+
+The router also implements a **fallback chain**: if a specialist agent fails or is unconfigured, it retries with the general agent before returning a 500.
+
+---
+
+## Step Functions Workflow
+
+The Step Functions state machine (`stepfunctions/workflow.asl.json`) includes:
+
+- **Retry logic** — 3 attempts with exponential backoff on Lambda errors
+- **Intent-based routing** — `Choice` state branches on `order / billing / support`
+- **Error states** — dedicated `HandleValidationError` and `HandleRoutingError` states with user-friendly messages
 
 ---
 
 ## Project Structure
 
 ```
-enterprise-ai-agent-rag-system/
-├── chat.py                          # Interactive CLI — streams agent responses
-├── bedrock/
-│   └── agent_config.md              # Agent setup reference (model, action groups, KB)
+enterprise-ai-agent-aws/
 ├── lambdas/
-│   ├── tool_order_status/
-│   │   └── handler.py               # Returns order status + ETA by order_id
-│   ├── tool_create_ticket/
-│   │   └── handler.py               # Creates support ticket, returns TKT-XXXXXX
-│   └── trigger_agent/
-│       └── handler.py               # Step Functions entry point for async invocation
-├── opensearch/
-│   ├── index_setup.py               # Creates kNN vector index for knowledge base
-│   └── teardown.py                  # Deletes all AWS resources (stops billing)
+│   ├── tool_order_status/       # Get order status + tracking
+│   ├── tool_order_history/      # List customer order history
+│   ├── tool_cancel_order/       # Cancel eligible orders
+│   ├── tool_create_ticket/      # Create support tickets
+│   ├── tool_escalate_issue/     # Escalate tickets with SLA routing
+│   ├── tool_get_invoice/        # Retrieve invoice details
+│   ├── tool_process_refund/     # Process refunds
+│   └── trigger_agent/           # Multi-agent router (Step Functions entry)
+├── layers/
+│   └── agent_commons/python/
+│       └── agent_commons.py     # Shared utilities Lambda Layer
+├── tests/
+│   └── unit/
+│       ├── test_order_tools.py  # 16 tests
+│       ├── test_support_tools.py # 15 tests
+│       ├── test_billing_tools.py # 13 tests
+│       └── test_router.py       # 10 tests (54 total)
 ├── stepfunctions/
-│   └── workflow.asl.json            # State machine for async agent orchestration
-├── .github/workflows/ci.yml         # CI pipeline
-├── .env.example                     # Environment variable template
+│   └── workflow.asl.json        # Multi-agent routing with retry + error handling
+├── opensearch/
+│   ├── index_setup.py           # Create KB index
+│   └── teardown.py              # Cleanup script
+├── bedrock/
+│   └── agent_config.md          # Agent configuration reference
+├── chat.py                      # Interactive CLI
+├── .env.example                 # Environment variable template
 ├── requirements.txt
-└── Makefile                         # Common commands
+├── requirements-dev.txt
+└── Makefile
 ```
 
 ---
 
-## Quick Start
+## Setup
 
-### Prerequisites
-
-- AWS CLI v2 configured (`aws configure`)
-- Python 3.10+
-- Bedrock model access enabled for **Claude Haiku 4.5** in your AWS account
-  (Console → Bedrock → Model access → enable `anthropic.claude-haiku-4-5`)
-
-### 1. Deploy Lambda Functions
-
-```bash
-# order-status-tool
-cd lambdas/tool_order_status
-zip function.zip handler.py
-aws lambda create-function \
-  --function-name order-status-tool \
-  --runtime python3.10 \
-  --role arn:aws:iam::<ACCOUNT_ID>:role/LambdaExecutionRole \
-  --handler handler.lambda_handler \
-  --zip-file fileb://function.zip
-
-# create-ticket-tool
-cd ../tool_create_ticket
-zip function.zip handler.py
-aws lambda create-function \
-  --function-name create-ticket-tool \
-  --runtime python3.10 \
-  --role arn:aws:iam::<ACCOUNT_ID>:role/LambdaExecutionRole \
-  --handler handler.lambda_handler \
-  --zip-file fileb://function.zip
-```
-
-### 2. Set Up OpenSearch Knowledge Base
-
-```bash
-# Edit opensearch/index_setup.py — replace YOUR-OPENSEARCH-ENDPOINT
-python opensearch/index_setup.py
-```
-
-### 3. Create Bedrock Agent
-
-See [`bedrock/agent_config.md`](bedrock/agent_config.md) for the full configuration reference.
-
-```bash
-aws bedrock-agent create-agent \
-  --agent-name enterprise-agent \
-  --foundation-model us.anthropic.claude-haiku-4-5-20251001-v1:0 \
-  --agent-resource-role-arn arn:aws:iam::<ACCOUNT_ID>:role/BedrockAgentRole \
-  --instruction "You are an enterprise assistant. You can look up order statuses and create support tickets. Always confirm details before taking action."
-
-aws bedrock-agent prepare-agent --agent-id <AGENT_ID>
-aws bedrock-agent create-agent-alias \
-  --agent-id <AGENT_ID> \
-  --agent-alias-name prod
-```
-
-### 4. Configure Environment
-
-```bash
-cp .env.example .env
-# Set AGENT_ID and AGENT_ALIAS_ID from the steps above
-```
-
-### 5. Chat with the Agent
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
-export AGENT_ID=<your-agent-id>
-export AGENT_ALIAS_ID=<your-alias-id>
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+# Fill in agent IDs for each specialist agent
+```
+
+### 3. Deploy Lambda Layer
+
+```bash
+cd layers/agent_commons
+zip -r agent_commons_layer.zip python/
+aws lambda publish-layer-version \
+  --layer-name agent-commons \
+  --zip-file fileb://agent_commons_layer.zip \
+  --compatible-runtimes python3.10 python3.11 python3.12
+```
+
+### 4. Deploy Lambda functions
+
+```bash
+# Example for one function — repeat for each tool
+cd lambdas/tool_order_status
+zip function.zip handler.py
+aws lambda create-function \
+  --function-name tool-order-status \
+  --runtime python3.11 \
+  --role arn:aws:iam::<ACCOUNT_ID>:role/LambdaExecutionRole \
+  --handler handler.lambda_handler \
+  --layers arn:aws:lambda:<REGION>:<ACCOUNT_ID>:layer:agent-commons:<VERSION> \
+  --zip-file fileb://function.zip
+```
+
+### 5. Create Bedrock Agents
+
+Create one agent per domain (Order, Support, Billing, General) and configure action groups pointing to the corresponding Lambda functions. See `bedrock/agent_config.md` for full configuration reference.
+
+### 6. Chat with the system
+
+```bash
 python chat.py
-```
-
-**Example session:**
-```
-Chat with your agent (session: session-a3f2c1b0)
-
-You: What's the status of order ORD-12345?
-Agent: Order ORD-12345 is currently In Transit with an ETA of 2-3 business days.
-
-You: Create a ticket — title: "Delayed shipment", description: "Order ORD-12345 is delayed"
-Agent: Done. Support ticket TKT-8A2F1C has been created and is now open.
 ```
 
 ---
 
-## AWS Cost Estimate
+## Running Tests
 
-| Service | Purpose | Approx. Cost |
-|---------|---------|-------------|
-| Bedrock (Claude Haiku 4.5) | Agent + LLM | ~$0.00025/1k input tokens |
-| Lambda (3 functions) | Tool execution | ~$0 (free tier) |
-| OpenSearch | Vector search / RAG | ~$0.10/hr (t3.small.search) |
-| Step Functions | Async orchestration | ~$0 (free tier: 4k transitions/month) |
-
-**Estimated cost for development and demo: < $5/day** (OpenSearch dominates if left running — stop it when not in use)
+```bash
+pip install -r requirements-dev.txt
+make test          # run all 54 unit tests
+make test-cov      # with coverage report
+```
 
 ---
 
 ## IAM Roles Required
 
-| Role | Trust Principal | Permissions |
-|------|----------------|-------------|
-| `BedrockAgentRole` | `bedrock.amazonaws.com` | `bedrock:InvokeModel`, `bedrock:Retrieve`, `lambda:InvokeFunction` |
+| Role | Trust | Permissions |
+|---|---|---|
+| `BedrockAgentRole` | `bedrock.amazonaws.com` | `bedrock:*` |
 | `LambdaExecutionRole` | `lambda.amazonaws.com` | `AWSLambdaBasicExecutionRole` |
-
----
-
-## Teardown (Stop All Billing)
-
-```bash
-python opensearch/teardown.py
-bash teardown.sh
-```
-
----
-
-## What This Demonstrates
-
-- **Bedrock Agents** — production tool-use pattern without custom orchestration
-- **Action Groups** — Lambda functions as typed agent tools with input validation
-- **RAG Knowledge Base** — OpenSearch kNN index with Titan embeddings (1536-dim)
-- **Step Functions** — async agent invocation for pipeline and batch integration
-- **Session management** — unique session IDs prevent conversation bleed across users
-- **Serverless architecture** — zero infrastructure to manage, scales to zero
 
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

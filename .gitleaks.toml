@@ -1,0 +1,14 @@
+[allowlist]
+description = "Allowlist for known false positives"
+
+# Bedrock agent IDs and alias IDs are not secrets — they are resource identifiers
+# visible in the AWS console and safe to reference in code history
+regexes = [
+    "AFRKJZJDE7",
+    "TSTALIASID"
+]
+
+# Ignore test files and example files
+paths = [
+    ".env.example"
+]

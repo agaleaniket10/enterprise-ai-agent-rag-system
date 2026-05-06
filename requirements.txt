@@ -1,4 +1,4 @@
-boto3==1.38.0
-opensearch-py==2.8.0
-python-dotenv==1.1.0
-requests==2.33.1
+boto3==1.34.144
+botocore==1.34.144
+opensearch-py==2.4.2
+requests-aws4auth==1.3.1
